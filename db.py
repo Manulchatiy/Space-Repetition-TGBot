@@ -1,7 +1,9 @@
+import os
 from datetime import datetime, timedelta, timezone
 import aiosqlite
 
-DB_PATH = "repetition.db"
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+DB_PATH = os.path.join(DATA_DIR, "repetition.db")
 
 # Интервалы по этапам в часах: 0 -> 24ч -> 72ч -> 7 дней (168ч) -> 14 дней (336ч)
 STAGES_HOURS = {
