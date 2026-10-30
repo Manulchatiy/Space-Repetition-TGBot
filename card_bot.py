@@ -1,6 +1,7 @@
 import asyncio
 import random
 import aiosqlite
+import os
 from datetime import datetime, timezone
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -8,6 +9,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
+from dotenv import load_dotenv
 
 from db import (
     init_db, add_card, get_card, delete_card, update_card,
@@ -15,7 +17,8 @@ from db import (
     get_user_stats_data, get_user_subjects, get_user_cards_count
 )
 
-API_TOKEN = "9038138373:AAE8hqxSQDbPB_xYC6SVXzcL8vqxJAtwfvY"
+load_dotenv()
+API_TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
