@@ -208,7 +208,7 @@ async def get_user_stats_data(tg_id: int):
         }
 
 async def get_user_cards_count(tg_id: int) -> int:
-    async with aiosqlite.connect("repetition.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(*) FROM cards WHERE tg_id = ?", (tg_id,)) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0

@@ -10,6 +10,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
+from db import DB_PATH
 
 from db import (
     init_db, add_card, get_card, delete_card, update_card,
@@ -792,7 +793,7 @@ async def reminder_worker():
     while True:
         await asyncio.sleep(21600)  # проверка каждые 6 часов
         try:
-            async with aiosqlite.connect("repetition.db") as db:
+            async with aiosqlite.connect(DB_PATH) as db:
                 db.row_factory = aiosqlite.Row
                 cur = await db.execute("SELECT * FROM user_stats")
                 users = await cur.fetchall()
