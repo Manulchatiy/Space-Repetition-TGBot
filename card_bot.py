@@ -1,5 +1,6 @@
 import asyncio
 import random
+import re
 import aiosqlite
 import os
 from datetime import datetime, timezone
@@ -134,31 +135,52 @@ async def process_fast_content(message: Message, state: FSMContext):
     subject = data.get("fast_subject", "Без предмета")
     tg_id = message.from_user.id
 
-    lines = [ln.strip() for ln in message.text.split("\n") if ln.strip()]
+    raw = message.text.strip()
 
-    if len(lines) != 4:
-        await message.answer(
-            f"❌ Нужно ровно <b>4 строки</b>. Ты прислал {len(lines)}.\n\n"
-            f"Попробуй снова или /cancel.",
-            parse_mode="HTML",
-        )
-        return
-
-    front_text, back_text, question, answer_part = lines
+    # Сначала пробуем разделитель "***" (многострочные поля)
+    parts = [p.strip() for p in re.split(r"\n\s*\*{3,}\s*\n", raw)]   # ← ИЗМЕНЕНО: --- на ***
+    if len(parts) == 4:
+        front_text, back_text, question, answer_part = parts
+    else:
+        # Fallback: простой формат — 4 строки (для коротких карточек)
+        lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
+        if len(lines) == 4:
+            front_text, back_text, question, answer_part = lines
+        else:
+            await message.answer(
+                "❌ Не смог разобрать карточку.\n\n"
+                "Есть <b>два формата</b>:\n\n"
+                "<b>1) Простой</b> — ровно 4 строки (если поля короткие):\n"
+                "<code>лицевая\nобратная\nвопрос\nответ</code>\n\n"
+                "<b>2) С разделителем</b> — если поля многострочные, "
+                "разделяй их строкой <code>***</code>:\n"                          # ← ИЗМЕНЕНО: --- на ***
+                "<code>лицевая\n"
+                "(может быть\nмногострочной)\n"
+                "***\n"                                                           # ← ИЗМЕНЕНО
+                "обратная\n"
+                "(тоже)\n"
+                "***\n"                                                           # ← ИЗМЕНЕНО
+                "вопрос\n"
+                "***\n"                                                           # ← ИЗМЕНЕНО
+                "вариант1; вариант2</code>\n\n"
+                "Попробуй снова или /cancel.",
+                parse_mode="HTML",
+            )
+            return
 
     # Определяем тип: есть ; → choice, иначе → typing
     if ";" in answer_part:
-        parts = [p.strip() for p in answer_part.split(";") if p.strip()]
-        if len(parts) < 2:
+        opts = [p.strip() for p in answer_part.split(";") if p.strip()]
+        if len(opts) < 2:
             await message.answer(
-                "❌ Для режима «опрос» нужно хотя бы 2 варианта через <code>;</code>.\n"
+                "❌ Для «опроса» нужно хотя бы 2 варианта через <code>;</code>.\n"
                 "Попробуй снова или /cancel.",
                 parse_mode="HTML",
             )
             return
         check_type = "choice"
-        correct_answer = parts[0]
-        options_str = ";".join(parts)
+        correct_answer = opts[0]
+        options_str = ";".join(opts)
     else:
         check_type = "typing"
         correct_answer = answer_part
@@ -513,22 +535,24 @@ def fast_instruction_text(subject: str) -> str:
     return (
         f"⚡ <b>Bliz-create!</b>\n"
         f"Предмет: <b>{subject}</b>\n\n"
-        f"Пришли карточку <b>ОДНИМ</b> сообщением, <b>4 строки</b>:\n"
-        f"1. Текст лицевой стороны\n"
-        f"2. Текст обратной стороны\n"
-        f"3. Вопрос\n"
-        f"4. Варианты через <code>;</code> (первый — правильный) <b>ИЛИ</b> один ответ\n\n"
-        f"<b>Пример (опрос):</b>\n"
+        f"Пришли карточку <b>ОДНИМ</b> сообщением.\n\n"
+        f"<b>Простой формат</b> (4 строки, если поля короткие):\n"
+        f"<code>лицевая сторона\n"
+        f"обратная сторона\n"
+        f"вопрос\n"
+        f"24; 72; 168; 336</code>\n"
+        f"(первый вариант — правильный; без <code>;</code> — ввод с клавиатуры)\n\n"
+        f"<b>С разделителем</b> (если поля многострочные — "
+        f"разделяй поля строкой <code>***</code>):\n"                              # ← ИЗМЕНЕНО: --- на ***
         f"<code>Сколько часов в 7 днях?\n"
+        f"(пояснение)\n"
+        f"***\n"                                                                    # ← ИЗМЕНЕНО
         f"7 × 24 = 168\n"
+        f"***\n"                                                                    # ← ИЗМЕНЕНО
         f"Сколько часов в неделе?\n"
+        f"***\n"                                                                    # ← ИЗМЕНЕНО
         f"24; 72; 168; 336</code>\n\n"
-        f"<b>Пример (клавиатура):</b>\n"
-        f"<code>Сколько бит в байте?\n"
-        f"8\n"
-        f"Сколько бит в байте?\n"
-        f"8</code>\n\n"
-        f"⚠️ Фото в этом режиме недоступно :(\n\n"
+        f"⚠️ Фото в этом режиме недоступно\n\n"
         f"Отмена — /cancel"
     )
 
@@ -657,7 +681,7 @@ async def process_edit_new_photo(message: Message, state: FSMContext):
         
     await send_updated_card(message.chat.id, card_id, state)
 
-@dp.message(CardEdit.new_value, F.text)
+@dp.message(CardEdit.new_value, F.text & ~F.text.startswith("/"))
 async def process_edit_new_text(message: Message, state: FSMContext):
     data = await state.get_data()
     card_id = data["edit_card_id"]
