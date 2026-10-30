@@ -6,13 +6,7 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_PATH = os.path.join(DATA_DIR, "repetition.db")
 
 # Интервалы по этапам в часах: 0 -> 24ч -> 72ч -> 7 дней (168ч) -> 14 дней (336ч)
-STAGES_HOURS = {
-    0: 24,
-    1: 24,
-    2: 72,
-    3: 168,
-    4: 336
-}
+STAGES_HOURS = {0: 24, 1: 72, 2: 168, 3: 336, 4: 336}
 MAX_STAGE = 4
 
 async def init_db() -> None:
@@ -74,6 +68,7 @@ async def add_card(
     next_str = next_review.strftime("%Y-%m-%d %H:%M:%S")
 
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO user_stats (tg_id) VALUES (?)", (tg_id,))
         cur = await db.execute("""
             INSERT INTO cards (tg_id, subject, front_text, front_photo_id, back_text, 
                                question, check_type, correct_answer, options_str, stage, next_review_at)
@@ -143,7 +138,7 @@ async def process_review_result(card_id: int, is_correct: bool):
         if is_correct:
             new_stage = min(old_stage + 1, MAX_STAGE)
         else:
-            new_stage = 1 # Сброс на 24ч (этап 1)
+            new_stage = 0 # Сброс на 24ч (этап 1)
             
         hours = STAGES_HOURS.get(new_stage, 24)
         next_review = datetime.now(timezone.utc) + timedelta(hours=hours)
@@ -212,3 +207,13 @@ async def get_user_cards_count(tg_id: int) -> int:
         async with db.execute("SELECT COUNT(*) FROM cards WHERE tg_id = ?", (tg_id,)) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
+
+async def get_last_subject(tg_id: int) -> str | None:
+    """Возвращает subject последней созданной карточки пользователя."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT subject FROM cards WHERE tg_id = ? ORDER BY id DESC LIMIT 1",
+            (tg_id,),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else None

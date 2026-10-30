@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -15,7 +15,7 @@ from db import DB_PATH
 from db import (
     init_db, add_card, get_card, delete_card, update_card,
     get_due_cards, process_review_result, record_rep_command,
-    get_user_stats_data, get_user_subjects, get_user_cards_count
+    get_user_stats_data, get_user_subjects, get_user_cards_count, get_last_subject
 )
 
 load_dotenv()
@@ -46,6 +46,11 @@ class CardCreation(StatesGroup):
 class CardEdit(StatesGroup):
     field_choice = State()
     new_value = State()
+
+class FastCreate(StatesGroup):
+    subject_choice = State()      # выбор предмета кнопками
+    new_subject_input = State()   # ввод нового предмета
+    waiting_content = State()     # ожидание 4 строк
 
 
 # --- КЛАВИАТУРЫ ГЛАВНОГО МЕНЮ ---
@@ -83,8 +88,161 @@ async def cmd_help(message: Message):
 @dp.message(Command("cancel", "clear"))
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
+    REVIEW_SESSIONS.pop(message.from_user.id, None)   
     await message.answer("Диалог отменен.", reply_markup=get_main_menu_kb())
 
+# --- БЫСТРОЕ СОЗДАНИЕ (/fast) ---
+@dp.message(Command("fast"))
+async def cmd_fast(message: Message, state: FSMContext):
+    tg_id = message.from_user.id
+    subjects = await get_user_subjects(tg_id)
+
+    if not subjects:
+        await message.answer(
+            "⚡ <b>Быстрый режим.</b>\n\n"
+            "У тебя пока нет предметов. Введи название первого:",
+            parse_mode="HTML",
+        )
+        await state.set_state(FastCreate.new_subject_input)
+        return
+
+    # Сохраняем список в FSM — в callback_data пойдут только индексы
+    await state.update_data(fast_subjects_list=subjects)
+
+    buttons = [
+        [InlineKeyboardButton(text=s, callback_data=f"fastsubj_{i}")]
+        for i, s in enumerate(subjects)
+    ]
+    buttons.append(
+        [InlineKeyboardButton(text="➕ Добавить новый предмет", callback_data="fastsubj_new")]
+    )
+    buttons.append(
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="fast_cancel")]
+        )
+
+    await message.answer(
+        "⚡ <b>Bliz-create!</b>\nВыбери предмет:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+    await state.set_state(FastCreate.subject_choice)
+
+
+@dp.message(FastCreate.waiting_content, F.text & ~F.text.startswith("/"))
+async def process_fast_content(message: Message, state: FSMContext):
+    data = await state.get_data()
+    subject = data.get("fast_subject", "Без предмета")
+    tg_id = message.from_user.id
+
+    lines = [ln.strip() for ln in message.text.split("\n") if ln.strip()]
+
+    if len(lines) != 4:
+        await message.answer(
+            f"❌ Нужно ровно <b>4 строки</b>. Ты прислал {len(lines)}.\n\n"
+            f"Попробуй снова или /cancel.",
+            parse_mode="HTML",
+        )
+        return
+
+    front_text, back_text, question, answer_part = lines
+
+    # Определяем тип: есть ; → choice, иначе → typing
+    if ";" in answer_part:
+        parts = [p.strip() for p in answer_part.split(";") if p.strip()]
+        if len(parts) < 2:
+            await message.answer(
+                "❌ Для режима «опрос» нужно хотя бы 2 варианта через <code>;</code>.\n"
+                "Попробуй снова или /cancel.",
+                parse_mode="HTML",
+            )
+            return
+        check_type = "choice"
+        correct_answer = parts[0]
+        options_str = ";".join(parts)
+    else:
+        check_type = "typing"
+        correct_answer = answer_part
+        options_str = None
+
+    card_id = await add_card(
+        tg_id=tg_id,
+        subject=subject,
+        front_text=front_text,
+        front_photo_id=None,
+        back_text=back_text,
+        question=question,
+        check_type=check_type,
+        correct_answer=correct_answer,
+        options_str=options_str,
+    )
+
+    await state.clear()
+
+    card = await get_card(card_id)
+    await message.answer(
+        f"⚡ Карточка #{card_id} создана!\n\n{format_card_info(card)}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"card_del_{card_id}"),
+                InlineKeyboardButton(text="✏️ Изменить", callback_data=f"card_edit_{card_id}"),
+            ]
+        ]),
+    )
+
+
+@dp.callback_query(F.data == "fast_cancel")
+async def callback_fast_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("❌ Быстрое создание отменено.")
+    await callback.answer()
+
+@dp.callback_query(FastCreate.subject_choice, F.data.startswith("fastsubj_"))
+async def process_fast_subject_choice(callback: CallbackQuery, state: FSMContext):
+    action = callback.data.split("_", 1)[1]
+    await callback.answer()
+
+    if action == "new":
+        await callback.message.edit_text(
+            "⚡ Введи название нового предмета:",
+            parse_mode="HTML",
+        )
+        await state.set_state(FastCreate.new_subject_input)
+        return
+
+    # Это индекс — достаём предмет из FSM-списка
+    data = await state.get_data()
+    subjects_list = data.get("fast_subjects_list", [])
+    try:
+        idx = int(action)
+    except ValueError:
+        idx = -1
+    if idx < 0 or idx >= len(subjects_list):
+        await callback.message.edit_text("⚠️ Список устарел. Начни заново — /fast")
+        return
+
+    subject = subjects_list[idx]
+    await state.update_data(fast_subject=subject)
+    await state.set_state(FastCreate.waiting_content)
+
+    await callback.message.edit_text(
+        fast_instruction_text(subject),
+        parse_mode="HTML",
+    )
+
+@dp.message(FastCreate.new_subject_input, ~F.text.startswith("/"))
+async def process_fast_new_subject(message: Message, state: FSMContext):
+    subject = (message.text or "").strip()
+    if not subject:
+        await message.answer("Пустое название. Введи ещё раз:")
+        return
+
+    await state.update_data(fast_subject=subject)
+    await state.set_state(FastCreate.waiting_content)
+
+    await message.answer(
+        fast_instruction_text(subject),
+        parse_mode="HTML",
+    )
 
 
 # --- СОЗДАНИЕ КАРТОЧКИ (/new и меню) С ФОТО ВЫБОРА ПРЕДМЕТА ---
@@ -142,7 +300,7 @@ async def process_subject_choice(callback: CallbackQuery, state: FSMContext):
             await state.update_data(menu_msg_id=sent.message_id)
         await state.set_state(CardCreation.front_side)
 
-@dp.message(CardCreation.new_subject_input)
+@dp.message(CardCreation.new_subject_input, ~F.text.startswith("/"))
 async def process_new_subject(message: Message, state: FSMContext):
     subject = message.text.strip()
     await state.update_data(subject=subject)
@@ -162,7 +320,7 @@ async def process_new_subject(message: Message, state: FSMContext):
     await state.update_data(menu_msg_id=sent.message_id)
     await state.set_state(CardCreation.front_side)
 
-@dp.message(CardCreation.front_side, F.photo | F.text)
+@dp.message(CardCreation.front_side, F.photo | (F.text & ~F.text.startswith("/")))
 async def process_front_side(message: Message, state: FSMContext):
     photo_id = message.photo[-1].file_id if message.photo else None
     front_text = message.caption if message.photo else message.text
@@ -190,7 +348,7 @@ async def process_front_side(message: Message, state: FSMContext):
         
     await state.set_state(CardCreation.question)
 
-@dp.message(CardCreation.question)
+@dp.message(CardCreation.question, ~F.text.startswith("/"))
 async def process_question_input(message: Message, state: FSMContext):
     question = message.text.strip()
     await state.update_data(question=question)
@@ -248,7 +406,7 @@ async def back_to_question_handler(callback: CallbackQuery, state: FSMContext):
     await state.set_state(CardCreation.question)
     await state.update_data(menu_msg_id=callback.message.message_id)
 
-@dp.message(CardCreation.correct_answer)
+@dp.message(CardCreation.correct_answer, ~F.text.startswith("/"))
 async def process_typing_answer(message: Message, state: FSMContext):
     ans = message.text.strip()
     await state.update_data(correct_answer=ans, options_str=None)
@@ -270,7 +428,7 @@ async def process_typing_answer(message: Message, state: FSMContext):
         
     await state.set_state(CardCreation.back_side)
 
-@dp.message(CardCreation.options)
+@dp.message(CardCreation.options, ~F.text.startswith("/"))
 async def process_options_answer(message: Message, state: FSMContext):
     raw_text = message.text.strip()
     parts = [p.strip() for p in raw_text.split(";") if p.strip()]
@@ -299,7 +457,7 @@ async def process_options_answer(message: Message, state: FSMContext):
         
     await state.set_state(CardCreation.back_side)
 
-@dp.message(CardCreation.back_side)
+@dp.message(CardCreation.back_side, ~F.text.startswith("/"))
 async def process_back_side_input(message: Message, state: FSMContext):
     back_text = message.text.strip()
     try:
@@ -350,6 +508,29 @@ async def process_back_side_input(message: Message, state: FSMContext):
     else:
         await message.answer(f"🎉 Карточка создана!\n\n{text}", reply_markup=keyboard)
 
+
+def fast_instruction_text(subject: str) -> str:
+    return (
+        f"⚡ <b>Bliz-create!</b>\n"
+        f"Предмет: <b>{subject}</b>\n\n"
+        f"Пришли карточку <b>ОДНИМ</b> сообщением, <b>4 строки</b>:\n"
+        f"1. Текст лицевой стороны\n"
+        f"2. Текст обратной стороны\n"
+        f"3. Вопрос\n"
+        f"4. Варианты через <code>;</code> (первый — правильный) <b>ИЛИ</b> один ответ\n\n"
+        f"<b>Пример (опрос):</b>\n"
+        f"<code>Сколько часов в 7 днях?\n"
+        f"7 × 24 = 168\n"
+        f"Сколько часов в неделе?\n"
+        f"24; 72; 168; 336</code>\n\n"
+        f"<b>Пример (клавиатура):</b>\n"
+        f"<code>Сколько бит в байте?\n"
+        f"8\n"
+        f"Сколько бит в байте?\n"
+        f"8</code>\n\n"
+        f"⚠️ Фото в этом режиме недоступно :(\n\n"
+        f"Отмена — /cancel"
+    )
 
 # --- ФОРМАТИРОВАНИЕ ИНФОРМАЦИИ КАРТОЧКИ ---
 def format_card_info(card: dict) -> str:
@@ -634,11 +815,8 @@ async def process_callback_review_answer(callback: CallbackQuery):
     await handle_review_answer_logic(tg_id, card, is_correct, callback.message)
     await callback.answer()
 
-@dp.message(F.text)
+@dp.message(F.text & ~F.text.startswith("/"), StateFilter(None))
 async def process_text_review_answer(message: Message, state: FSMContext):
-    if message.text and message.text.startswith("/"):
-        return
-
     current_state = await state.get_state()
     if current_state is not None:
         return
@@ -780,12 +958,20 @@ async def cmd_stat(event: Message | CallbackQuery):
         f"📆 Пройдено за день: {stats['today_reviewed']}\n"
         f"🗑️ Удалено карт: {stats['deleted_cards']}"
     )
-    
-    if isinstance(event, Message):
-        await event.answer_photo(photo=PHOTO_STAT, caption=text)
-    else:
-        await event.message.answer_photo(photo=PHOTO_STAT, caption=text)
-        await event.answer()
+    try:
+        if isinstance(event, Message):
+            await event.answer_photo(photo=PHOTO_STAT, caption=text)
+        else:
+            await event.message.answer_photo(photo=PHOTO_STAT, caption=text)
+            await event.answer()
+    except Exception as e:
+        print(f"/stat photo error: {e}")
+        # fallback: текстом, если фото протухло
+        if isinstance(event, Message):
+            await event.answer(text)
+        else:
+            await event.message.answer(text)
+            await event.answer()
 
 
 # --- ФОНОВЫЙ ПЛАНИРОВЩИК НАПОМИНАНИЙ (ДУОЛИНГО СТИЛЬ) ---
