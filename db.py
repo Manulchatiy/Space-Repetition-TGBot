@@ -78,24 +78,25 @@ async def add_card(
         await db.commit()
         return card_id
 
-async def get_card(card_id: int):
+async def get_card(card_id: int, tg_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT * FROM cards WHERE id = ?", (card_id,))
+        cur = await db.execute("SELECT * FROM cards WHERE id = ? AND tg_id = ?", (card_id, tg_id),)
         row = await cur.fetchone()
         return dict(row) if row else None
 
-async def delete_card(card_id: int) -> int | None:
+async def delete_card(card_id: int, tg_id: int) -> int | None:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT tg_id FROM cards WHERE id = ?", (card_id,))
+        cur = await db.execute(
+            "SELECT tg_id FROM cards WHERE id = ? AND tg_id = ?",
+            (card_id, tg_id),
+        )
         row = await cur.fetchone()
         if not row:
             return None
-        tg_id = row['tg_id']
-        
+
         await db.execute("DELETE FROM cards WHERE id = ?", (card_id,))
-        # Обновляем статистику удаленных
         await db.execute("""
             INSERT INTO user_stats (tg_id, deleted_cards) VALUES (?, 1)
             ON CONFLICT(tg_id) DO UPDATE SET deleted_cards = deleted_cards + 1
@@ -103,17 +104,24 @@ async def delete_card(card_id: int) -> int | None:
         await db.commit()
         return tg_id
 
-async def update_card(card_id: int, kwargs: dict):
-    fields = []
-    values = []
-    for k, v in kwargs.items():
-        fields.append(f"{k} = ?")
-        values.append(v)
-    values.append(card_id)
-    
+async def update_card(card_id: int, tg_id: int, kwargs: dict) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT 1 FROM cards WHERE id = ? AND tg_id = ?",
+            (card_id, tg_id),
+        )
+        if not await cur.fetchone():
+            return False
+
+        fields = []
+        values = []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            values.append(v)
+        values.append(card_id)
         await db.execute(f"UPDATE cards SET {', '.join(fields)} WHERE id = ?", values)
         await db.commit()
+        return True
 
 async def get_due_cards(tg_id: int) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -124,10 +132,13 @@ async def get_due_cards(tg_id: int) -> list[dict]:
         """, (tg_id,))
         return [dict(r) for r in (await cur.fetchall())]
 
-async def process_review_result(card_id: int, is_correct: bool):
+async def process_review_result(card_id: int, is_correct: bool, tg_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT * FROM cards WHERE id = ?", (card_id,))
+        cur = await db.execute(
+            "SELECT * FROM cards WHERE id = ? AND tg_id = ?",
+            (card_id, tg_id),
+        )
         card = await cur.fetchone()
         if not card:
             return None

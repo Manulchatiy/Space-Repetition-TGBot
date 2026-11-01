@@ -3,7 +3,7 @@ import random
 import re
 import aiosqlite
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart, Command, StateFilter
@@ -21,6 +21,7 @@ from db import (
 
 load_dotenv()
 API_TOKEN = os.getenv("BOT_TOKEN")
+MSK = timezone(timedelta(hours=3))
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -200,7 +201,7 @@ async def process_fast_content(message: Message, state: FSMContext):
 
     await state.clear()
 
-    card = await get_card(card_id)
+    card = await get_card(card_id, tg_id)
     await message.answer(
         f"⚡ Карточка #{card_id} создана!\n\n{format_card_info(card)}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -502,7 +503,7 @@ async def process_back_side_input(message: Message, state: FSMContext):
         options_str=data.get("options_str")
     )
     
-    card = await get_card(card_id)
+    card = await get_card(card_id, tg_id)
     await state.clear()
     
     text = format_card_info(card)
@@ -556,6 +557,16 @@ def fast_instruction_text(subject: str) -> str:
         f"Отмена — /cancel"
     )
 
+def format_review_time(utc_str: str | None) -> str:
+    """Преобразует строку UTC из БД в МСК для отображения пользователю."""
+    if not utc_str:
+        return "—"
+    try:
+        dt = datetime.strptime(utc_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        return dt.astimezone(MSK).strftime("%Y-%m-%d %H:%M:%S МСК")
+    except Exception:
+        return utc_str
+    
 # --- ФОРМАТИРОВАНИЕ ИНФОРМАЦИИ КАРТОЧКИ ---
 def format_card_info(card: dict) -> str:
     options_display = "Нет"
@@ -566,7 +577,7 @@ def format_card_info(card: dict) -> str:
     return (
         f"id: {card['id']}\n"
         f"🧬 Предмет: {card['subject']}\n"
-        f"⏳️ Следующее время повторения: {card['next_review_at']}\n"
+        f"⏳️ Следующее время повторения: {format_review_time(card['next_review_at'])}\n"
         f"⬆️ Лицевая сторона: {card['front_text'] or 'Нет'}\n"
         f"❓️ Вопрос: {card['question'] or 'Нет'}\n"
         f"🗳️ Варианты ответов: {options_display}\n"
@@ -579,14 +590,18 @@ def format_card_info(card: dict) -> str:
 @dp.callback_query(F.data.startswith("card_del_yes_"))
 async def callback_delete_yes(callback: CallbackQuery):
     card_id = int(callback.data.split("_")[3])
-    await delete_card(card_id)
+    deleted = await delete_card(card_id, callback.from_user.id)
+    if deleted is None:
+        await callback.answer("Карточка не найдена или не ваша", show_alert=True)
+        return
     await callback.message.delete()
     await callback.message.answer(f"Карточка (id:{card_id}) удалена.")
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("card_del_no_"))
 async def callback_delete_no(callback: CallbackQuery):
     card_id = int(callback.data.split("_")[3])
-    card = await get_card(card_id)
+    card = await get_card(card_id, callback.from_user.id)
     if card:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
@@ -604,6 +619,10 @@ async def callback_delete_no(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("card_del_"))
 async def callback_delete_card(callback: CallbackQuery):
     card_id = int(callback.data.split("_")[2])
+    card = await get_card(card_id, callback.from_user.id)
+    if not card:
+        await callback.answer("Карточка не найдена или не ваша", show_alert=True)
+        return
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="Да", callback_data=f"card_del_yes_{card_id}"),
@@ -616,6 +635,10 @@ async def callback_delete_card(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("card_edit_"))
 async def callback_edit_card(callback: CallbackQuery, state: FSMContext):
     card_id = int(callback.data.split("_")[2])
+    card = await get_card(card_id, callback.from_user.id)
+    if not card:
+        await callback.answer("Карточка не найдена или не ваша", show_alert=True)
+        return
     await state.update_data(edit_card_id=card_id)
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -672,14 +695,17 @@ async def process_edit_new_photo(message: Message, state: FSMContext):
         return
         
     photo_id = message.photo[-1].file_id
-    await update_card(card_id, {field: photo_id})
+    ok = await update_card(card_id, message.from_user.id, {field: photo_id})
+    if not ok:
+        await message.answer("Карточка не найдена или не ваша")
+        return
     
     try:
         await message.delete()
     except Exception:
         pass
         
-    await send_updated_card(message.chat.id, card_id, state)
+    await send_updated_card(message.chat.id, card_id, message.from_user.id, state)
 
 @dp.message(CardEdit.new_value, F.text & ~F.text.startswith("/"))
 async def process_edit_new_text(message: Message, state: FSMContext):
@@ -692,18 +718,21 @@ async def process_edit_new_text(message: Message, state: FSMContext):
         return
         
     val = message.text.strip()
-    await update_card(card_id, {field: val})
+    ok = await update_card(card_id, message.from_user.id, {field: val})
+    if not ok:
+        await message.answer("Карточка не найдена или не ваша")
+        return
     
     try:
         await message.delete()
     except Exception:
         pass
         
-    await send_updated_card(message.chat.id, card_id, state)
+    await send_updated_card(message.chat.id, card_id, message.from_user.id, state)
 
-async def send_updated_card(chat_id: int, card_id: int, state: FSMContext):
+async def send_updated_card(chat_id: int, card_id: int, tg_id: int, state: FSMContext):
     await state.clear()
-    card = await get_card(card_id)
+    card = await get_card(card_id, tg_id)
     if not card:
         return
         
@@ -730,11 +759,11 @@ async def cmd_id_search(message: Message):
         return
     
     card_id = int(parts[1])
-    card = await get_card(card_id)
+    card = await get_card(card_id, message.from_user.id)
     if not card:
         await message.answer("❌️ Карточка с таким ID не найдена.")
         return
-        
+    
     text = format_card_info(card)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -870,7 +899,7 @@ async def handle_review_answer_logic(tg_id: int, card: dict, is_correct: bool, m
         except Exception:
             pass
             
-    updated_card, new_stage = await process_review_result(card['id'], is_correct)
+    updated_card, new_stage = await process_review_result(card['id'], is_correct, tg_id)
     
     if is_correct:
         if card['stage'] >= 4:
@@ -925,7 +954,7 @@ async def callback_appeal(callback: CallbackQuery):
     card_id = int(callback.data.split("_")[1])
     tg_id = callback.from_user.id
     
-    await process_review_result(card_id, is_correct=True)
+    await process_review_result(card_id, is_correct=True, tg_id=callback.from_user.id)
     
     await callback.message.delete()
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -941,7 +970,10 @@ async def callback_appeal(callback: CallbackQuery):
 async def callback_maxstage_del(callback: CallbackQuery):
     card_id = int(callback.data.split("_")[2])
     tg_id = callback.from_user.id
-    await delete_card(card_id)
+    deleted = await delete_card(card_id, tg_id)
+    if deleted is None:
+        await callback.answer("Карточка не найдена или не ваша", show_alert=True)
+        return
     await callback.message.delete()
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
