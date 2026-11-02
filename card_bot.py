@@ -141,12 +141,12 @@ async def process_fast_content(message: Message, state: FSMContext):
     # Сначала пробуем разделитель "***" (многострочные поля)
     parts = [p.strip() for p in re.split(r"\n\s*\*{3,}\s*\n", raw)]   # ← ИЗМЕНЕНО: --- на ***
     if len(parts) == 4:
-        front_text, back_text, question, answer_part = parts
+        front_text, question, answer_part, back_text = parts
     else:
         # Fallback: простой формат — 4 строки (для коротких карточек)
         lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
         if len(lines) == 4:
-            front_text, back_text, question, answer_part = lines
+            front_text, question, answer_part, back_text = lines
         else:
             await message.answer(
                 "❌ Не смог разобрать карточку.\n\n"
@@ -539,20 +539,20 @@ def fast_instruction_text(subject: str) -> str:
         f"Пришли карточку <b>ОДНИМ</b> сообщением.\n\n"
         f"<b>Простой формат</b> (4 строки, если поля короткие):\n"
         f"<code>лицевая сторона\n"
-        f"обратная сторона\n"
         f"вопрос\n"
-        f"24; 72; 168; 336</code>\n"
-        f"(первый вариант — правильный; без <code>;</code> — ввод с клавиатуры)\n\n"
+        f"верный ответ (или варианты через ;)\n"
+        f"обратная сторона</code>\n"
+        f"(первый вариант через <code>;</code> — правильный; без <code>;</code> — ввод с клавиатуры)\n\n"
         f"<b>С разделителем</b> (если поля многострочные — "
-        f"разделяй поля строкой <code>***</code>):\n"                              # ← ИЗМЕНЕНО: --- на ***
+        f"разделяй поля строкой <code>***</code>):\n"
         f"<code>Сколько часов в 7 днях?\n"
         f"(пояснение)\n"
-        f"***\n"                                                                    # ← ИЗМЕНЕНО
-        f"7 × 24 = 168\n"
-        f"***\n"                                                                    # ← ИЗМЕНЕНО
+        f"***\n"
         f"Сколько часов в неделе?\n"
-        f"***\n"                                                                    # ← ИЗМЕНЕНО
-        f"24; 72; 168; 336</code>\n\n"
+        f"***\n"
+        f"24; 72; 168; 336\n"
+        f"***\n"
+        f"7 × 24 = 168</code>\n\n"
         f"⚠️ Фото в этом режиме недоступно\n\n"
         f"Отмена — /cancel"
     )
