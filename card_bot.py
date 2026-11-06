@@ -5,7 +5,7 @@ import aiosqlite
 import os
 from datetime import datetime, timezone, timedelta
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
@@ -86,6 +86,17 @@ async def cmd_help(message: Message):
         "/clear — сбросить текущий диалог"
     )
     await message.answer(text, parse_mode="HTML")
+
+@dp . message ( Command ( "export" ) ) 
+async  def  cmd_export ( message :  Message ) : 
+    # Отправляем только владельцу (опционально, но безопасно)
+    # if message.from_user.id != ТВОЙ_ID: return
+    
+    try:
+        file = FSInputFile(DB_PATH, filename="repetition.db")
+        await message.answer_document(file, caption="📦 Актуальная база данных")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось отправить файл: {e}")
 
 @dp.message(Command("cancel", "clear"))
 async def cmd_cancel(message: Message, state: FSMContext):
