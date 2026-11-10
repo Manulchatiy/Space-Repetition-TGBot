@@ -876,7 +876,7 @@ async def process_callback_review_answer(callback: CallbackQuery):
     card = session["current_card"]
     is_correct = (chosen_ans == card['correct_answer'])
     
-    await handle_review_answer_logic(tg_id, card, is_correct, callback.message)
+    await handle_review_answer_logic(tg_id, card, is_correct, callback.message, chosen_ans)
     await callback.answer()
 
 @dp.message(F.text & ~F.text.startswith("/"), StateFilter(None))
@@ -900,18 +900,18 @@ async def process_text_review_answer(message: Message, state: FSMContext):
         except Exception:
             pass
             
-        await handle_review_answer_logic(tg_id, card, is_correct, message)
+        await handle_review_answer_logic(tg_id, card, is_correct, message, user_ans)
 
-async def handle_review_answer_logic(tg_id: int, card: dict, is_correct: bool, message_obj: Message):
+async def handle_review_answer_logic(tg_id: int, card: dict, is_correct: bool, message_obj: Message, user_answer: str):
     session = REVIEW_SESSIONS.get(tg_id)
     if session and "current_msg_id" in session:
         try:
             await bot.delete_message(chat_id=tg_id, message_id=session["current_msg_id"])
         except Exception:
             pass
-            
+
     updated_card, new_stage = await process_review_result(card['id'], is_correct, tg_id)
-    
+
     if is_correct:
         if card['stage'] >= 4:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -922,7 +922,8 @@ async def handle_review_answer_logic(tg_id: int, card: dict, is_correct: bool, m
             ])
             await bot.send_message(
                 chat_id=tg_id,
-                text="♟️ Информация успешно усвоена. Хотите удалить карточку?",
+                text=f"Ваш ответ: {user_answer}\n\n"
+                     f"♟️ Информация успешно усвоена. Хотите удалить карточку?",
                 reply_markup=keyboard
             )
         else:
@@ -931,7 +932,9 @@ async def handle_review_answer_logic(tg_id: int, card: dict, is_correct: bool, m
             ])
             await bot.send_message(
                 chat_id=tg_id,
-                text=f"Верный ответ!\n\n↩️ Обратная сторона карточки: {card['back_text'] or 'Нет'}",
+                text=f"Ваш ответ: {user_answer}\n\n"
+                     f"✅ Верный ответ!\n\n"
+                     f"↩️ Обратная сторона карточки: {card['back_text'] or 'Нет'}",
                 reply_markup=keyboard
             )
     else:
@@ -943,7 +946,8 @@ async def handle_review_answer_logic(tg_id: int, card: dict, is_correct: bool, m
         ])
         await bot.send_message(
             chat_id=tg_id,
-            text=f"❌️ Кажется вы ошиблись. Верный ответ: {card['correct_answer']}, я полагаю.\n\n"
+            text=f"Ваш ответ: {user_answer}\n\n"
+                 f"❌️ Кажется вы ошиблись. Верный ответ: {card['correct_answer']}, я полагаю.\n\n"
                  f"↩️ Обратная сторона карточки: {card['back_text'] or 'Нет'}\n\n"
                  f"⏳️ Срок флеш-карты (id: {card['id']}) вернется к 24 часам.",
             reply_markup=keyboard
