@@ -138,7 +138,7 @@ async def show_time_menu(message_obj, tg_id: int, edit: bool = False):
         f"⏱️ <b>Учёт учебного времени</b>\n\n"
         f"🎯 Цель: {goal_str}\n"
         f"📅 Дата старта: {start_str}\n"
-        f"✅ Отработано всего: {_fmt_h(total)} ч"
+        f"✅ Отработано всего: {_fmt_h(total)} h"
     )
 
     if edit:
@@ -301,8 +301,8 @@ async def msg_time_hours(message: Message, state: FSMContext):
     sign = "+" if hours >= 0 else ""
     day_str = entry_date or "сегодня"
     await message.answer(
-        f"✅ Записано: <b>{sign}{_fmt_h(hours)} ч</b> → {subject} ({day_str})\n"
-        f"Итого: <b>{_fmt_h(total)} ч</b>",
+        f"✅ Записано: <b>{sign}{_fmt_h(hours)} h</b> → {subject} ({day_str})\n"
+        f"Итого: <b>{_fmt_h(total)} h</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 В меню времени", callback_data="time_menu_back")]
@@ -1329,12 +1329,12 @@ async def cmd_stat(event: Message | CallbackQuery):
     t_settings = await get_time_settings(tg_id)
     t_goal = t_settings.get("goal_hours")
     if t_goal:
-        time_line = f"⏱️ PLAY TIME {_fmt_h(time_total)} / {_fmt_h(t_goal)} h \n" f"LAST PLAYED Now"
+        time_line = f"⏱️ PLAY TIME: {_fmt_h(time_total)}/{_fmt_h(t_goal)} h\n" f"LAST PLAYED: Now"
     else:
-        time_line = f"⏱️ PLAY TIME {_fmt_h(time_total)} h \n" f"LAST PLAYED Now"
+        time_line = f"⏱️ PLAY TIME: {_fmt_h(time_total)} h\n" f"LAST PLAYED: Now"
     if time_by_subj:
         time_line += "\n" + "\n".join(
-            f"   • {t['subject']}: {_fmt_h(t['hours'])} ч" for t in time_by_subj
+            f"   • {t['subject']}: {_fmt_h(t['hours'])} h" for t in time_by_subj
         )
 
     text = (
