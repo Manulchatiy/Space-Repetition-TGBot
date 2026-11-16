@@ -16,7 +16,9 @@ from db import DB_PATH
 from db import (
     init_db, add_card, get_card, delete_card, update_card,
     get_due_cards, process_review_result, record_rep_command,
-    get_user_stats_data, get_user_subjects, get_user_cards_count, get_last_subject
+    get_user_stats_data, get_user_subjects, get_user_cards_count, get_last_subject,
+    get_time_settings, set_time_start_date, set_time_goal,
+    add_time_entry, get_time_total, get_time_by_subject, get_user_time_subjects,
 )
 
 load_dotenv()
@@ -54,14 +56,33 @@ class FastCreate(StatesGroup):
     new_subject_input = State()   # ввод нового предмета
     waiting_content = State()     # ожидание 4 строк
 
+class TimeAdd(StatesGroup):
+    subject_choice = State()
+    new_subject_input = State()
+    hours_input = State()
+
+class TimeSetup(StatesGroup):
+    goal = State()
+    start_date = State()
 
 # --- КЛАВИАТУРЫ ГЛАВНОГО МЕНЮ ---
 def get_main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📥 Создать карточку для повторений", callback_data="menu_create")],
         [InlineKeyboardButton(text="🔄 Повторить истекшие", callback_data="menu_rep")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="menu_stat")]
+        [InlineKeyboardButton(text="⏱️ Учет времени", callback_data="menu_time")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="menu_stat")],
     ])
+
+def get_time_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить / вычесть часы", callback_data="time_add")],
+        [InlineKeyboardButton(text="⚙️ Настройки (цель, дата старта)", callback_data="time_setup")],
+        [InlineKeyboardButton(text="🔙 В главное меню", callback_data="time_back")],
+    ])
+
+def _fmt_h(h: float) -> str:
+    return f"{int(h)}" if h == int(h) else f"{h:.1f}"
 
 # --- КОМАНДЫ ---
 @dp.message(CommandStart())
@@ -103,6 +124,287 @@ async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
     REVIEW_SESSIONS.pop(message.from_user.id, None)   
     await message.answer("Диалог отменен.", reply_markup=get_main_menu_kb())
+
+# --- УЧЁТ ВРЕМЕНИ (/time и меню) ---
+async def show_time_menu(message_obj, tg_id: int, edit: bool = False):
+    settings = await get_time_settings(tg_id)
+    total = await get_time_total(tg_id)
+    goal = settings.get("goal_hours")
+    start_date = settings.get("start_date")
+    goal_str = f"{_fmt_h(goal)} ч" if goal else "не задана"
+    start_str = start_date or "не задана"
+
+    text = (
+        f"⏱️ <b>Учёт учебного времени</b>\n\n"
+        f"🎯 Цель: {goal_str}\n"
+        f"📅 Дата старта: {start_str}\n"
+        f"✅ Отработано всего: {_fmt_h(total)} ч"
+    )
+
+    if edit:
+        try:
+            await message_obj.edit_text(text, parse_mode="HTML", reply_markup=get_time_menu_kb())
+            return
+        except Exception:
+            pass
+    await message_obj.answer(text, parse_mode="HTML", reply_markup=get_time_menu_kb())
+
+@dp.message(Command("time"))
+async def cmd_time(message: Message, state: FSMContext):
+    await state.clear()
+    await show_time_menu(message, message.from_user.id)
+
+@dp.callback_query(F.data == "menu_time")
+async def cb_menu_time(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await show_time_menu(callback.message, callback.from_user.id)
+    await callback.answer()
+
+@dp.callback_query(F.data == "time_back")
+async def cb_time_back(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.message.answer_photo(
+        photo=PHOTO_START,
+        caption="Это бот для интервальных повторений...",
+        reply_markup=get_main_menu_kb(),
+    )
+    await callback.answer()
+
+# --- Добавление / вычитание часов ---
+@dp.callback_query(F.data == "time_add")
+async def cb_time_add(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    tg_id = callback.from_user.id
+    subjects = await get_user_time_subjects(tg_id)
+
+    if not subjects:
+        try:
+            await callback.message.edit_text(
+                "⏱️ <b>Добавление часов</b>\n\nВведи название дисциплины:",
+                parse_mode="HTML",
+            )
+        except Exception:
+            await callback.message.answer(
+                "⏱️ <b>Добавление часов</b>\n\nВведи название дисциплины:",
+                parse_mode="HTML",
+            )
+        await state.set_state(TimeAdd.new_subject_input)
+        return
+
+    await state.update_data(time_subjects_list=subjects)
+    buttons = [[InlineKeyboardButton(text=s, callback_data=f"timesubj_{i}")] for i, s in enumerate(subjects)]
+    buttons.append([InlineKeyboardButton(text="➕ Добавить новую дисциплину", callback_data="timesubj_new")])
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="time_cancel")])
+    try:
+        await callback.message.edit_text(
+            "⏱️ <b>Добавление часов</b>\n\nВыбери дисциплину:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+    except Exception:
+        await callback.message.answer(
+            "⏱️ <b>Добавление часов</b>\n\nВыбери дисциплину:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+    await state.set_state(TimeAdd.subject_choice)
+
+@dp.callback_query(F.data == "time_cancel")
+async def cb_time_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await show_time_menu(callback.message, callback.from_user.id, edit=True)
+    await callback.answer()
+
+@dp.callback_query(TimeAdd.subject_choice, F.data.startswith("timesubj_"))
+async def cb_time_subject_choice(callback: CallbackQuery, state: FSMContext):
+    action = callback.data.split("_", 1)[1]
+    await callback.answer()
+
+    if action == "new":
+        await callback.message.edit_text("⏱️ Введи название дисциплины:", parse_mode="HTML")
+        await state.set_state(TimeAdd.new_subject_input)
+        return
+
+    data = await state.get_data()
+    subjects_list = data.get("time_subjects_list", [])
+    try:
+        idx = int(action)
+    except ValueError:
+        idx = -1
+    if idx < 0 or idx >= len(subjects_list):
+        await callback.message.edit_text("⚠️ Список устарел. Начни заново — /time")
+        await state.clear()
+        return
+
+    subject = subjects_list[idx]
+    await state.update_data(time_subject=subject)
+    await state.set_state(TimeAdd.hours_input)
+    await callback.message.edit_text(
+        f"⏱️ Дисциплина: <b>{subject}</b>\n\n"
+        f"Введи количество часов.\n"
+        f"• <code>2</code> или <code>2.5</code> — за сегодня\n"
+        f"• <code>-1</code> — вычесть 1 час\n"
+        f"• <code>2024-11-01 3</code> — за конкретную дату",
+        parse_mode="HTML",
+    )
+
+@dp.message(TimeAdd.new_subject_input, ~F.text.startswith("/"))
+async def msg_time_new_subject(message: Message, state: FSMContext):
+    subject = (message.text or "").strip()
+    if not subject:
+        await message.answer("Пустое название. Введи ещё раз:")
+        return
+    await state.update_data(time_subject=subject)
+    await state.set_state(TimeAdd.hours_input)
+    await message.answer(
+        f"⏱️ Дисциплина: <b>{subject}</b>\n\n"
+        f"Введи количество часов (<code>2</code>, <code>-1</code> или <code>2024-11-01 3</code>):",
+        parse_mode="HTML",
+    )
+
+@dp.message(TimeAdd.hours_input, ~F.text.startswith("/"))
+async def msg_time_hours(message: Message, state: FSMContext):
+    raw = (message.text or "").strip().replace(",", ".")
+    data = await state.get_data()
+    subject = data.get("time_subject", "Без предмета")
+    tg_id = message.from_user.id
+
+    entry_date = None
+    hours = None
+
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})\s+(-?\d+(?:\.\d+)?)$", raw)
+    if m:
+        entry_date, hours = m.group(1), float(m.group(2))
+    else:
+        try:
+            hours = float(raw)
+        except ValueError:
+            await message.answer(
+                "❌ Не понял формат.\n"
+                "Введи <code>2</code>, <code>-1.5</code> или <code>2024-11-01 3</code>.",
+                parse_mode="HTML",
+            )
+            return
+
+    await add_time_entry(tg_id, subject, hours, entry_date)
+    await state.clear()
+
+    total = await get_time_total(tg_id)
+    sign = "+" if hours >= 0 else ""
+    day_str = entry_date or "сегодня"
+    await message.answer(
+        f"✅ Записано: <b>{sign}{_fmt_h(hours)} ч</b> → {subject} ({day_str})\n"
+        f"Итого: <b>{_fmt_h(total)} ч</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 В меню времени", callback_data="time_menu_back")]
+        ]),
+    )
+
+@dp.callback_query(F.data == "time_menu_back")
+async def cb_time_menu_back(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await show_time_menu(callback.message, callback.from_user.id)
+    await callback.answer()
+
+# --- Настройки (цель, дата старта) ---
+def _time_setup_kb(settings: dict):
+    goal = settings.get("goal_hours")
+    start = settings.get("start_date")
+    goal_str = f"{_fmt_h(goal)} ч" if goal else "не задана"
+    start_str = start or "не задана"
+    return (
+        f"⚙️ <b>Настройки учёта времени</b>\n\n"
+        f"🎯 Цель: <b>{goal_str}</b>\n"
+        f"📅 Дата старта: <b>{start_str}</b>",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎯 Задать цель", callback_data="time_set_goal")],
+            [InlineKeyboardButton(text="📅 Задать дату старта", callback_data="time_set_start")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="time_cancel")],
+        ])
+    )
+
+@dp.callback_query(F.data == "time_setup")
+async def cb_time_setup(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    settings = await get_time_settings(callback.from_user.id)
+    text, kb = _time_setup_kb(settings)
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@dp.callback_query(F.data == "time_set_goal")
+async def cb_time_set_goal(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.edit_text(
+        "🎯 Введи цель в часах (например <code>1000</code>).\n"
+        "Или <code>-</code> чтобы убрать цель.",
+        parse_mode="HTML",
+    )
+    await state.set_state(TimeSetup.goal)
+
+@dp.message(TimeSetup.goal, ~F.text.startswith("/"))
+async def msg_time_goal(message: Message, state: FSMContext):
+    raw = (message.text or "").strip().replace(",", ".")
+    tg_id = message.from_user.id
+    if raw == "-":
+        await set_time_goal(tg_id, None)
+    else:
+        try:
+            goal = float(raw)
+            if goal <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Нужно положительное число или `-`.")
+            return
+        await set_time_goal(tg_id, goal)
+
+    await state.clear()
+    settings = await get_time_settings(tg_id)
+    text, kb = _time_setup_kb(settings)
+    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@dp.callback_query(F.data == "time_set_start")
+async def cb_time_set_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.edit_text(
+        "📅 Введи дату старта в формате <code>YYYY-MM-DD</code>.\n"
+        "Или <code>-</code> чтобы убрать.",
+        parse_mode="HTML",
+    )
+    await state.set_state(TimeSetup.start_date)
+
+@dp.message(TimeSetup.start_date, ~F.text.startswith("/"))
+async def msg_time_start(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    tg_id = message.from_user.id
+    if raw == "-":
+        await set_time_start_date(tg_id, None)
+    else:
+        try:
+            datetime.strptime(raw, "%Y-%m-%d")
+        except ValueError:
+            await message.answer("❌ Неверный формат. Пример: <code>2024-11-01</code>", parse_mode="HTML")
+            return
+        await set_time_start_date(tg_id, raw)
+
+    await state.clear()
+    settings = await get_time_settings(tg_id)
+    text, kb = _time_setup_kb(settings)
+    await message.answer(text, parse_mode="HTML", reply_markup=kb)
 
 # --- БЫСТРОЕ СОЗДАНИЕ (/fast) ---
 @dp.message(Command("fast"))
@@ -1015,19 +1317,34 @@ async def callback_maxstage_keep(callback: CallbackQuery):
 async def cmd_stat(event: Message | CallbackQuery):
     tg_id = event.from_user.id
     user_name = event.from_user.full_name
-    
+
     stats = await get_user_stats_data(tg_id)
     subjects = await get_user_subjects(tg_id)
     cards_count = await get_user_cards_count(tg_id)
     subjects_str = ", ".join(subjects) if subjects else "Нет предметов"
-    
+
+    # --- NEW: учёт времени ---
+    time_total = await get_time_total(tg_id)
+    time_by_subj = await get_time_by_subject(tg_id)
+    t_settings = await get_time_settings(tg_id)
+    t_goal = t_settings.get("goal_hours")
+    if t_goal:
+        time_line = f"⏱️ Отработано: {_fmt_h(time_total)} / {_fmt_h(t_goal)} ч"
+    else:
+        time_line = f"⏱️ Отработано: {_fmt_h(time_total)} ч"
+    if time_by_subj:
+        time_line += "\n" + "\n".join(
+            f"   • {t['subject']}: {_fmt_h(t['hours'])} ч" for t in time_by_subj
+        )
+
     text = (
         f"📈 Прогресс пользователя {user_name}:\n\n"
         f"🧬 Дисциплины: {subjects_str}\n"
         f"📚 Всего карточек: {cards_count}\n"
         f"⏳️ Пройдено за все время: {stats['total_reviewed']}\n"
         f"📆 Пройдено за день: {stats['today_reviewed']}\n"
-        f"🗑️ Удалено карт: {stats['deleted_cards']}"
+        f"🗑️ Удалено карт: {stats['deleted_cards']}\n\n"
+        f"{time_line}"
     )
     try:
         if isinstance(event, Message):
@@ -1037,7 +1354,6 @@ async def cmd_stat(event: Message | CallbackQuery):
             await event.answer()
     except Exception as e:
         print(f"/stat photo error: {e}")
-        # fallback: текстом, если фото протухло
         if isinstance(event, Message):
             await event.answer(text)
         else:

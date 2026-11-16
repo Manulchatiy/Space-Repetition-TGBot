@@ -45,6 +45,27 @@ async def init_db() -> None:
         """)
         
         await db.execute("CREATE INDEX IF NOT EXISTS idx_cards_due ON cards (tg_id, next_review_at)")
+
+        # --- Учёт учебного времени ---
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS time_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tg_id INTEGER NOT NULL,
+                subject TEXT NOT NULL,
+                hours REAL NOT NULL,
+                entry_date TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS time_settings (
+                tg_id INTEGER PRIMARY KEY,
+                goal_hours REAL,
+                start_date TEXT
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_time_log_tg ON time_log (tg_id)")
+
         await db.commit()
 
 async def get_user_subjects(tg_id: int) -> list[str]:
@@ -228,3 +249,63 @@ async def get_last_subject(tg_id: int) -> str | None:
         )
         row = await cur.fetchone()
         return row[0] if row else None
+
+# ==================== УЧЁТ ВРЕМЕНИ ====================
+
+async def get_time_settings(tg_id: int) -> dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM time_settings WHERE tg_id = ?", (tg_id,))
+        row = await cur.fetchone()
+        if row:
+            return dict(row)
+        return {"tg_id": tg_id, "goal_hours": None, "start_date": None}
+
+async def set_time_start_date(tg_id: int, start_date: str | None) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO time_settings (tg_id) VALUES (?)", (tg_id,))
+        await db.execute("UPDATE time_settings SET start_date = ? WHERE tg_id = ?", (start_date, tg_id))
+        await db.commit()
+
+async def set_time_goal(tg_id: int, goal: float | None) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO time_settings (tg_id) VALUES (?)", (tg_id,))
+        await db.execute("UPDATE time_settings SET goal_hours = ? WHERE tg_id = ?", (goal, tg_id))
+        await db.commit()
+
+async def add_time_entry(tg_id: int, subject: str, hours: float, entry_date: str | None = None) -> None:
+    if entry_date is None:
+        entry_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO time_log (tg_id, subject, hours, entry_date) VALUES (?, ?, ?, ?)",
+            (tg_id, subject, hours, entry_date),
+        )
+        await db.commit()
+
+async def get_time_total(tg_id: int) -> float:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT COALESCE(SUM(hours), 0) FROM time_log WHERE tg_id = ?", (tg_id,))
+        row = await cur.fetchone()
+        return float(row[0]) if row else 0.0
+
+async def get_time_by_subject(tg_id: int) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("""
+            SELECT subject, SUM(hours) AS hours FROM time_log
+            WHERE tg_id = ? GROUP BY subject ORDER BY hours DESC
+        """, (tg_id,))
+        rows = await cur.fetchall()
+        return [{"subject": r["subject"], "hours": float(r["hours"])} for r in rows]
+
+async def get_user_time_subjects(tg_id: int) -> list[str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+            SELECT subject FROM cards WHERE tg_id = ?
+            UNION
+            SELECT subject FROM time_log WHERE tg_id = ?
+            ORDER BY subject
+        """, (tg_id, tg_id))
+        rows = await cur.fetchall()
+        return [r[0] for r in rows]
