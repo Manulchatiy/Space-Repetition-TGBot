@@ -1329,9 +1329,9 @@ async def cmd_stat(event: Message | CallbackQuery):
     t_settings = await get_time_settings(tg_id)
     t_goal = t_settings.get("goal_hours")
     if t_goal:
-        time_line = f"⏱️ Отработано: {_fmt_h(time_total)} / {_fmt_h(t_goal)} ч"
+        time_line = f"⏱️ PLAY TIME {_fmt_h(time_total)} / {_fmt_h(t_goal)} h \n" f"LAST PLAYED Now"
     else:
-        time_line = f"⏱️ Отработано: {_fmt_h(time_total)} ч"
+        time_line = f"⏱️ PLAY TIME {_fmt_h(time_total)} h \n" f"LAST PLAYED Now"
     if time_by_subj:
         time_line += "\n" + "\n".join(
             f"   • {t['subject']}: {_fmt_h(t['hours'])} ч" for t in time_by_subj
