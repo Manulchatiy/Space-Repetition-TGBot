@@ -131,7 +131,7 @@ async def show_time_menu(message_obj, tg_id: int, edit: bool = False):
     total = await get_time_total(tg_id)
     goal = settings.get("goal_hours")
     start_date = settings.get("start_date")
-    goal_str = f"{_fmt_h(goal)} ч" if goal else "не задана"
+    goal_str = f"{_fmt_h(goal)} h" if goal else "не задана"
     start_str = start_date or "не задана"
 
     text = (
@@ -323,7 +323,7 @@ async def cb_time_menu_back(callback: CallbackQuery, state: FSMContext):
 def _time_setup_kb(settings: dict):
     goal = settings.get("goal_hours")
     start = settings.get("start_date")
-    goal_str = f"{_fmt_h(goal)} ч" if goal else "не задана"
+    goal_str = f"{_fmt_h(goal)} h" if goal else "не задана"
     start_str = start or "не задана"
     return (
         f"⚙️ <b>Настройки учёта времени</b>\n\n"
